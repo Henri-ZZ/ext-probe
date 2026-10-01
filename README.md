@@ -1,6 +1,6 @@
-# Chrome 应用商店排名探测工具
+# Ext Probe：浏览器扩展数据探测工具
 
-这是一个 Node.js + TypeScript 实验工具，用于验证和采集 Chrome 应用商店（Chrome Web Store，简称 CWS）的搜索结果顺序。
+`ext-probe` 是一个 Node.js + TypeScript 浏览器扩展数据探测项目。当前第一个能力是验证和采集 Chrome 应用商店（Chrome Web Store，简称 CWS）的搜索结果顺序；项目名称不与排名功能绑定，后续可以继续加入其他扩展市场数据和指标。
 
 当前默认 Top 50 使用纯 HTTP：首次普通 GET 获取前 10 条和 continuation token，随后进行 4 次匿名分页 POST。它不需要浏览器、Cookie、Google 登录或代理。Browser adapter 仍保留用于 ground truth 和回退验证。
 

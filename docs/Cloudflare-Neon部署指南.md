@@ -4,6 +4,8 @@
 
 本指南用于把项目提交到 GitHub，并部署为 Cloudflare Worker Cron。前端和 Vercel 不在本阶段范围内。
 
+部署后的 Worker 名称为 `ext-probe`。
+
 ## 1. 本地确认
 
 要求 Node.js 22 或更高版本。

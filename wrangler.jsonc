@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "cws-ranking-probe",
+  "name": "ext-probe",
   "main": "src/worker.ts",
   "compatibility_date": "2026-10-01",
   "triggers": {

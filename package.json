@@ -1,5 +1,5 @@
 {
-  "name": "cws-ranking-probe",
+  "name": "ext-probe",
   "version": "0.1.0",
   "private": true,
   "type": "module",

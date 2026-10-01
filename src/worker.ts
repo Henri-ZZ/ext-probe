@@ -197,7 +197,7 @@ export default {
     }
     return Response.json({
       ok: true,
-      service: "cws-ranking-probe",
+      service: "ext-probe",
       mode: "cloudflare-cron",
       topN: DEFAULT_TOP_N,
     });
