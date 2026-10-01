@@ -14,6 +14,13 @@ CREATE TABLE IF NOT EXISTS collection_batches (
   error_message text
 );
 
+-- 兼容在分片功能加入前已经初始化过的数据库。
+ALTER TABLE collection_batches
+  ADD COLUMN IF NOT EXISTS shard_index integer NOT NULL DEFAULT 0;
+
+ALTER TABLE collection_batches
+  ADD COLUMN IF NOT EXISTS shard_count integer NOT NULL DEFAULT 1;
+
 CREATE TABLE IF NOT EXISTS ranking_runs (
   id uuid PRIMARY KEY,
   batch_id uuid NOT NULL REFERENCES collection_batches(id) ON DELETE CASCADE,
