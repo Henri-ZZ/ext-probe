@@ -4,6 +4,7 @@ import { DAILY_CRON_SHARDS, DEFAULT_TOP_N, getShardJobs, TARGET_EXTENSION_ID } f
 
 interface Env {
   DATABASE_URL: string;
+  MANUAL_TRIGGER_TOKEN?: string;
   TOP_N?: string;
   COLLECTION_DELAY_MS?: string;
 }
@@ -103,6 +104,7 @@ export async function runCollection(
   env: Env,
   scheduledAt = new Date(),
   shardIndex = 0,
+  source = "cloudflare-cron",
 ): Promise<{ batchId: string; shardIndex: number; succeeded: number; failed: number }> {
   if (!env.DATABASE_URL) throw new Error("缺少 DATABASE_URL secret。");
 
@@ -118,7 +120,7 @@ export async function runCollection(
     INSERT INTO collection_batches (id, scheduled_at, started_at, status, source, shard_index, shard_count)
     VALUES (
       ${batchId}::uuid, ${scheduledAt.toISOString()}::timestamptz, now(), 'running',
-      'cloudflare-cron', ${shardIndex}, ${DAILY_CRON_SHARDS.length}
+      ${source}, ${shardIndex}, ${DAILY_CRON_SHARDS.length}
     )
   `;
 
@@ -190,16 +192,32 @@ export default {
     }));
   },
 
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if (request.method !== "GET" || url.pathname !== "/health") {
-      return new Response("Not Found", { status: 404 });
+    if (request.method === "GET" && url.pathname === "/health") {
+      return Response.json({
+        ok: true,
+        service: "ext-probe",
+        mode: "cloudflare-cron",
+        topN: DEFAULT_TOP_N,
+      });
     }
-    return Response.json({
-      ok: true,
-      service: "ext-probe",
-      mode: "cloudflare-cron",
-      topN: DEFAULT_TOP_N,
-    });
+
+    if (request.method === "POST" && url.pathname === "/admin/run") {
+      if (!env.MANUAL_TRIGGER_TOKEN) {
+        return Response.json({ ok: false, error: "手动触发尚未配置。" }, { status: 503 });
+      }
+      if (request.headers.get("Authorization") !== `Bearer ${env.MANUAL_TRIGGER_TOKEN}`) {
+        return Response.json({ ok: false, error: "未授权。" }, { status: 401 });
+      }
+      const shard = Number(url.searchParams.get("shard"));
+      if (!Number.isInteger(shard) || shard < 0 || shard >= DAILY_CRON_SHARDS.length) {
+        return Response.json({ ok: false, error: "shard 必须是 0、1 或 2。" }, { status: 400 });
+      }
+      const summary = await runCollection(env, new Date(), shard, "manual-http");
+      return Response.json({ ok: true, ...summary });
+    }
+
+    return new Response("Not Found", { status: 404 });
   },
 };

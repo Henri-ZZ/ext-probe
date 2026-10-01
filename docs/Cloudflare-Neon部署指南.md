@@ -65,10 +65,17 @@ ORDER BY table_name;
 | `CLOUDFLARE_API_TOKEN` | 上一步创建的 Cloudflare API token |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Account ID |
 | `DATABASE_URL` | Neon 提供的完整 PostgreSQL 连接串，包含 `sslmode=require` |
+| `MANUAL_TRIGGER_TOKEN` | 自行生成的随机手动触发密钥，例如 `openssl rand -hex 32` 的输出 |
 
 GitHub Actions 会在 runner 中生成一个临时 secret 文件，并通过 `wrangler deploy --secrets-file` 将代码和 `DATABASE_URL` 原子部署。临时文件会在成功或失败后清理，不会进入 Git。这样首次部署时不需要预先创建 Worker。
 
-Secret 名称区分大小写，必须准确写成 `DATABASE_URL`，不能写成 `NEON_DATABASE_URL`、`database_url` 或 GitHub Variable。三项都应建立在 **Repository secrets** 中。
+Secret 名称区分大小写，必须准确写成表格中的名称。四项都应建立在 **Repository secrets** 中，不能放入 GitHub Variables。
+
+另在 **Settings → Secrets and variables → Actions → Variables** 添加一个 Repository Variable：
+
+| Variable 名称 | 内容 |
+| --- | --- |
+| `WORKER_URL` | Worker 的公开地址，例如 `https://ext-probe.<你的子域>.workers.dev` |
 
 ## 6. 首次部署与以后自动部署
 
@@ -89,6 +96,18 @@ git push origin main
 7. 应用 `wrangler.jsonc` 中的三个 Cron Trigger。
 
 Pull request 只运行检查，不部署。也可以在 GitHub 的 **Actions → 持续集成 → Run workflow** 手动重试部署。
+
+### 手动立即采集
+
+完成 `MANUAL_TRIGGER_TOKEN` 和 `WORKER_URL` 配置并重新部署一次后，进入：
+
+```text
+GitHub → Actions → 手动采集 → Run workflow
+```
+
+可以选择单个分片 `0`、`1`、`2`，或选择 `all` 依次执行全部分片。`all` 会发出三次独立 Worker 请求，每次仍只处理 6 组任务，不会突破单次 50 个子请求限制。
+
+Worker 只接受带正确 Bearer Token 的 `POST /admin/run`；未配置 token 返回 503，错误 token 返回 401。不要把 token 放入 URL、仓库代码或 GitHub Variable。
 
 ## 7. 定时设置
 

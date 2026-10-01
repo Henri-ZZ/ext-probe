@@ -62,8 +62,9 @@ jobs:
       - name: 生成临时 Worker secret 文件
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MANUAL_TRIGGER_TOKEN: ${{ secrets.MANUAL_TRIGGER_TOKEN }}
         run: |
-          node -e "require('node:fs').writeFileSync('.worker-secrets.json', JSON.stringify({ DATABASE_URL: process.env.DATABASE_URL }))"
+          node -e "const fs=require('node:fs'); const value={DATABASE_URL:process.env.DATABASE_URL}; if(process.env.MANUAL_TRIGGER_TOKEN)value.MANUAL_TRIGGER_TOKEN=process.env.MANUAL_TRIGGER_TOKEN; fs.writeFileSync('.worker-secrets.json',JSON.stringify(value))"
       - name: 原子部署 Worker 与数据库连接 secret
         uses: cloudflare/wrangler-action@v4
         with:

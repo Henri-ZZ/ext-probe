@@ -1,0 +1,53 @@
+name: 手动采集
+
+on:
+  workflow_dispatch:
+    inputs:
+      shard:
+        description: 选择分片；all 会依次触发三次独立 Worker 请求
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - "0"
+          - "1"
+          - "2"
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    name: 触发 Cloudflare 采集
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检查手动触发配置
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          MANUAL_TRIGGER_TOKEN: ${{ secrets.MANUAL_TRIGGER_TOKEN }}
+        run: |
+          if [ -z "$WORKER_URL" ]; then
+            echo "::error::缺少 Repository Variable：WORKER_URL"
+            exit 1
+          fi
+          if [ -z "$MANUAL_TRIGGER_TOKEN" ]; then
+            echo "::error::缺少 Repository Secret：MANUAL_TRIGGER_TOKEN"
+            exit 1
+          fi
+      - name: 执行所选分片
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          MANUAL_TRIGGER_TOKEN: ${{ secrets.MANUAL_TRIGGER_TOKEN }}
+          SELECTED_SHARD: ${{ inputs.shard }}
+        run: |
+          base_url="${WORKER_URL%/}"
+          if [ "$SELECTED_SHARD" = "all" ]; then shards="0 1 2"; else shards="$SELECTED_SHARD"; fi
+          for shard in $shards; do
+            echo "触发分片 $shard"
+            curl --fail-with-body --silent --show-error \
+              --request POST \
+              --header "Authorization: Bearer $MANUAL_TRIGGER_TOKEN" \
+              "$base_url/admin/run?shard=$shard"
+            echo
+          done
