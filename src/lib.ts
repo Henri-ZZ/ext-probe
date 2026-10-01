@@ -104,10 +104,7 @@ export function argValue(name: string, fallback?: string): string | undefined {
   return index >= 0 ? process.argv[index + 1] : fallback;
 }
 
-export function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
+export { positiveInt } from "./config.js";
 
 export async function pause(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms));

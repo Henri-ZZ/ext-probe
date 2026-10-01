@@ -34,17 +34,27 @@ cp .dev.vars.example .dev.vars
 
 ## 3. 初始化 Neon 表结构
 
-在 Neon 控制台打开 SQL Editor，执行仓库中的 `db/schema.sql`。这是一次性操作；以后重复执行也不会删除已有数据。
+在 Neon 控制台打开 SQL Editor，按顺序执行两个仓库的 schema：
 
-执行后确认三张表已经出现：
+1. 本仓库的 `db/schema.sql`，创建 `collection_batches`、`ranking_runs`、`ranking_results`；
+2. ext-signal 仓库的 `db/schema.sql`，创建 `extensions`、`tracking_targets` 以及 `target_latest` 视图。
+
+顺序不能颠倒：ext-signal 的 schema 依赖 `ranking_runs` 才能建立视图。两步都是一次性操作，重复执行不会删除已有数据。
+
+执行后确认六张表和一个视图已经出现：
 
 ```sql
-SELECT table_name
+SELECT table_name, table_type
 FROM information_schema.tables
 WHERE table_schema = 'public'
-  AND table_name IN ('collection_batches', 'ranking_runs', 'ranking_results')
-ORDER BY table_name;
+  AND table_name IN (
+    'collection_batches', 'ranking_runs', 'ranking_results', 'extension_profiles',
+    'extensions', 'tracking_targets', 'target_latest'
+  )
+ORDER BY table_type, table_name;
 ```
+
+Worker 会从 `tracking_targets` 读取采集任务，所以如果这张表不存在或没有任何启用的目标，Cron 会正常运行但不会采集任何数据。
 
 ## 4. 准备 Cloudflare 自动部署凭据
 
@@ -105,9 +115,18 @@ Pull request 只运行检查，不部署。也可以在 GitHub 的 **Actions →
 GitHub → Actions → 手动采集 → Run workflow
 ```
 
-可以选择单个分片 `0`、`1`、`2`，或选择 `all` 依次执行全部分片。`all` 会发出三次独立 Worker 请求，每次仍只处理 6 组任务，不会突破单次 50 个子请求限制。
+可以选择连续触发 1、3 或 6 轮，每轮仍只处理 6 组最久未采集的任务，因此不会突破单次 50 个子请求限制。
 
-Worker 只接受带正确 Bearer Token 的 `POST /admin/run`；未配置 token 返回 503，错误 token 返回 401。不要把 token 放入 URL、仓库代码或 GitHub Variable。
+也可以直接请求 Worker：
+
+```bash
+curl -X POST "$WORKER_URL/admin/run" \
+  -H "Authorization: Bearer $MANUAL_TRIGGER_TOKEN"
+```
+
+`batch` 参数可以覆盖本次批次大小（1–10），例如 `/admin/run?batch=10`。旧版的 `shard` 参数已不再使用，会被忽略。
+
+Worker 只接受带正确 Bearer Token 的 `POST /admin/run`；未配置 token 返回 503，token 错误返回 401，`batch` 越界返回 400。不要把 token 放入 URL、仓库代码或 GitHub Variable。
 
 ## 7. 定时设置
 
@@ -116,14 +135,16 @@ Worker 只接受带正确 Bearer Token 的 `POST /admin/run`；未配置 token �
 ```json
 {
   "triggers": {
-    "crons": ["0 2 * * *", "20 2 * * *", "40 2 * * *"]
+    "crons": ["*/15 * * * *"]
   }
 }
 ```
 
-Cloudflare Cron 使用 UTC。三个表达式分别在北京时间每天 `10:00`、`10:20`、`10:40` 运行。每个分片固定处理 6 组任务，三次合计覆盖 9 个关键词 × 2 个语言，每组每天只采集一次。修改后重新部署，配置最多可能需要约 15 分钟传播。
+Cloudflare Cron 使用 UTC，最小粒度是 1 分钟。Worker 每 15 分钟检查一次数据库，只采集「从未成功采集过」或「距上次成功采集超过 `REFRESH_HOURS`（默认 20 小时）」的 (keyword, locale) 组，按最久未采集优先，单次最多 `BATCH_SIZE`（默认 6）组。
 
-每个分片最多约 38 个外部子请求，低于 Workers Free 单次 50 个的限制。三个分片每天合计约 111 个请求，但 Cloudflare 的该项限制按单次 Worker 调用计算，不是按全天累计。
+因此新增扩展或关键词后不需要改代码或重新部署，下一次 Cron 就会开始采集；目标数量增长时覆盖率会自然摊开。修改 Cron 后重新部署，配置最多可能需要约 15 分钟传播。
+
+每个批次最多 6 组、约 30 个子请求，低于 Workers Free 单次 50 个的限制。每天 96 次调用的请求量也远低于 Free 计划每日 10 万次请求的额度。
 
 ## 8. 本地模拟 Cron
 

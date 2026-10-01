@@ -59,3 +59,22 @@ CREATE INDEX IF NOT EXISTS ranking_results_extension_idx
 
 CREATE INDEX IF NOT EXISTS collection_batches_scheduled_at_idx
   ON collection_batches (scheduled_at DESC);
+
+-- 扩展的商店元数据（标题、图标等）。
+--
+-- 由 ext-probe 独占写入：所有 Chrome Web Store 出网请求都留在本仓库。
+-- ext-signal 只读取这张表来展示名称与图标，不会写入。
+--
+-- 两个数据来源：
+--   1. 搜索结果页内嵌的 AF_initDataCallback 数据，随采集免费获得；
+--   2. 详情页的 og: 元数据，由 POST /admin/resolve 按需抓取。
+CREATE TABLE IF NOT EXISTS extension_profiles (
+  cws_id text PRIMARY KEY,
+  title text NOT NULL,
+  icon_url text,
+  description text,
+  slug text,
+  rating double precision,
+  rating_count integer,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);

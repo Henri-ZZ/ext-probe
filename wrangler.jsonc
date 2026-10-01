@@ -4,11 +4,13 @@
   "main": "src/worker.ts",
   "compatibility_date": "2026-10-01",
   "triggers": {
-    "crons": ["0 2 * * *", "20 2 * * *", "40 2 * * *"]
+    "crons": ["*/15 * * * *"]
   },
   "vars": {
     "TOP_N": "50",
-    "COLLECTION_DELAY_MS": "1000"
+    "COLLECTION_DELAY_MS": "1000",
+    "BATCH_SIZE": "6",
+    "REFRESH_HOURS": "20"
   },
   "secrets": {
     "required": ["DATABASE_URL"]

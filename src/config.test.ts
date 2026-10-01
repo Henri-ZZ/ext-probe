@@ -1,16 +1,52 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DAILY_CRON_SHARDS, getDailyJobs, getShardJobs } from "./config.js";
+import { positiveInt, resolveTargetRanks } from "./config.js";
 
-test("daily matrix is split into three complete non-overlapping shards", () => {
-  const allJobs = getDailyJobs();
-  const shards = DAILY_CRON_SHARDS.map((_, index) => getShardJobs(index));
+test("resolveTargetRanks 为每个目标扩展返回名次，未出现则为 null", () => {
+  const items = [
+    { position: 1, extensionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    { position: 8, extensionId: "edjbgblhciojhakodeflnpampekciifl" },
+    { position: 11, extensionId: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+  ];
 
-  assert.deepEqual(shards.map((jobs) => jobs.length), [6, 6, 6]);
-  assert.equal(shards.flat().length, allJobs.length);
-  assert.equal(new Set(shards.flat().map((job) => `${job.keyword}\0${job.locale}`)).size, allJobs.length);
   assert.deepEqual(
-    shards.flat().map((job) => `${job.keyword}\0${job.locale}`).sort(),
-    allJobs.map((job) => `${job.keyword}\0${job.locale}`).sort(),
+    resolveTargetRanks(items, [
+      "edjbgblhciojhakodeflnpampekciifl",
+      "cccccccccccccccccccccccccccccccc",
+    ]),
+    [
+      { cwsId: "edjbgblhciojhakodeflnpampekciifl", rank: 8 },
+      { cwsId: "cccccccccccccccccccccccccccccccc", rank: null },
+    ],
   );
+});
+
+test("resolveTargetRanks 对重复目标只按 SERP 取一次名次", () => {
+  const items = [{ position: 3, extensionId: "dddddddddddddddddddddddddddddddd" }];
+
+  assert.deepEqual(
+    resolveTargetRanks(items, [
+      "dddddddddddddddddddddddddddddddd",
+      "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    ]),
+    [
+      { cwsId: "dddddddddddddddddddddddddddddddd", rank: 3 },
+      { cwsId: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", rank: null },
+    ],
+  );
+});
+
+test("resolveTargetRanks 在空 SERP 下全部返回 null", () => {
+  assert.deepEqual(resolveTargetRanks([], ["ffffffffffffffffffffffffffffffff"]), [
+    { cwsId: "ffffffffffffffffffffffffffffffff", rank: null },
+  ]);
+});
+
+test("positiveInt 只接受正整数，否则回退", () => {
+  assert.equal(positiveInt("6", 3), 6);
+  assert.equal(positiveInt("0", 3), 3);
+  assert.equal(positiveInt("-2", 3), 3);
+  assert.equal(positiveInt("abc", 3), 3);
+  assert.equal(positiveInt(undefined, 3), 3);
+  assert.equal(positiveInt("2.5", 3), 3);
 });

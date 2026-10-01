@@ -6,6 +6,7 @@
   "include": [
     "src/worker.ts",
     "src/config.ts",
+    "src/metadata.ts",
     "src/parser.ts",
     "src/types.ts",
     "src/adapters/http.ts",

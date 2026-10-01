@@ -3,16 +3,15 @@ name: 手动采集
 on:
   workflow_dispatch:
     inputs:
-      shard:
-        description: 选择分片；all 会依次触发三次独立 Worker 请求
+      rounds:
+        description: 连续触发几轮；每轮最多采集 BATCH_SIZE 个最久未采集的组
         required: true
-        default: all
+        default: "3"
         type: choice
         options:
-          - all
-          - "0"
           - "1"
-          - "2"
+          - "3"
+          - "6"
 
 permissions:
   contents: read
@@ -35,19 +34,20 @@ jobs:
             echo "::error::缺少 Repository Secret：MANUAL_TRIGGER_TOKEN"
             exit 1
           fi
-      - name: 执行所选分片
+      - name: 连续触发若干轮采集
         env:
           WORKER_URL: ${{ vars.WORKER_URL }}
           MANUAL_TRIGGER_TOKEN: ${{ secrets.MANUAL_TRIGGER_TOKEN }}
-          SELECTED_SHARD: ${{ inputs.shard }}
+          ROUNDS: ${{ inputs.rounds }}
         run: |
           base_url="${WORKER_URL%/}"
-          if [ "$SELECTED_SHARD" = "all" ]; then shards="0 1 2"; else shards="$SELECTED_SHARD"; fi
-          for shard in $shards; do
-            echo "触发分片 $shard"
+          round=1
+          while [ "$round" -le "$ROUNDS" ]; do
+            echo "第 $round 轮"
             curl --fail-with-body --silent --show-error \
               --request POST \
               --header "Authorization: Bearer $MANUAL_TRIGGER_TOKEN" \
-              "$base_url/admin/run?shard=$shard"
+              "$base_url/admin/run"
             echo
+            round=$((round + 1))
           done
