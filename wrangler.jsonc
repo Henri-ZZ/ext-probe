@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "cws-ranking-probe",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "triggers": {
+    "crons": ["0 2 * * *"]
+  },
+  "vars": {
+    "TOP_N": "50",
+    "COLLECTION_DELAY_MS": "1000"
+  },
+  "secrets": {
+    "required": ["DATABASE_URL"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}
