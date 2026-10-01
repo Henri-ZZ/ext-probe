@@ -30,29 +30,63 @@ cp .dev.vars.example .dev.vars
 
 然后只在 `.dev.vars` 中填写真实 `DATABASE_URL`。该文件已加入 `.gitignore`。
 
-## 3. 创建并登录 Cloudflare
+## 3. 初始化 Neon 表结构
 
-登录：
+在 Neon 控制台打开 SQL Editor，执行仓库中的 `db/schema.sql`。这是一次性操作；以后重复执行也不会删除已有数据。
 
-```bash
-npx wrangler login
+执行后确认三张表已经出现：
+
+```sql
+SELECT table_name
+FROM information_schema.tables
+WHERE table_schema = 'public'
+  AND table_name IN ('collection_batches', 'ranking_runs', 'ranking_results')
+ORDER BY table_name;
 ```
 
-先设置 Neon 连接串为加密 secret；如果 Worker 还不存在，Wrangler 会引导创建：
+## 4. 准备 Cloudflare 自动部署凭据
+
+1. 登录 Cloudflare，进入 **My Profile → API Tokens → Create Token**。
+2. 选择 **Edit Cloudflare Workers** 模板。
+3. 把 Account Resources 限定为实际部署 Worker 的那个账号。
+4. 创建后立即复制 token；Cloudflare 只显示一次。
+5. 在 Cloudflare 控制台复制该账号的 Account ID。
+
+不要使用 Global API Key，也不要把 token 或 Account ID 写进仓库。
+
+## 5. 配置 GitHub Secrets
+
+进入 GitHub 仓库：**Settings → Secrets and variables → Actions → New repository secret**，添加：
+
+| Secret 名称 | 内容 |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | 上一步创建的 Cloudflare API token |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Account ID |
+| `DATABASE_URL` | Neon 提供的完整 PostgreSQL 连接串，包含 `sslmode=require` |
+
+GitHub Actions 会把 `DATABASE_URL` 写成 Cloudflare Worker secret，不会把值写进代码或 `wrangler.jsonc`。后续每次部署会更新或保留该 secret。
+
+## 6. 首次部署与以后自动部署
+
+把代码 push 到 `main`：
 
 ```bash
-npx wrangler secret put DATABASE_URL
+git push origin main
 ```
 
-`wrangler secret put` 会创建并部署新的 Worker 版本。输入时粘贴 Neon 连接串，不要把连接串作为命令行参数。
+工作流会依次执行：
 
-然后部署代码，以确认 secret 和 Cron 配置都已生效：
+1. 安装依赖；
+2. TypeScript 类型检查；
+3. 自动测试；
+4. Worker dry-run 构建；
+5. 前四步全部通过后部署到 Cloudflare；
+6. 同步 `DATABASE_URL` Worker secret；
+7. 应用 `wrangler.jsonc` 中的三个 Cron Trigger。
 
-```bash
-npm run worker:deploy
-```
+Pull request 只运行检查，不部署。也可以在 GitHub 的 **Actions → 持续集成 → Run workflow** 手动重试部署。
 
-## 4. 定时设置
+## 7. 定时设置
 
 `wrangler.jsonc` 默认配置：
 
@@ -68,7 +102,7 @@ Cloudflare Cron 使用 UTC。三个表达式分别在北京时间每天 `10:00`�
 
 每个分片最多约 38 个外部子请求，低于 Workers Free 单次 50 个的限制。三个分片每天合计约 111 个请求，但 Cloudflare 的该项限制按单次 Worker 调用计算，不是按全天累计。
 
-## 5. 本地模拟 Cron
+## 8. 本地模拟 Cron
 
 准备好 `.dev.vars` 并初始化数据库后：
 
@@ -90,7 +124,7 @@ curl "http://localhost:8787/cdn-cgi/local/scheduled?cron=0+2+*+*+*&format=json"
 curl "http://localhost:8787/health"
 ```
 
-## 6. 验证数据
+## 9. 验证数据
 
 在 Neon SQL Editor 中运行：
 
@@ -123,7 +157,7 @@ WHERE rr.run_id = '替换为 ranking_runs.id'
 ORDER BY rr.position;
 ```
 
-## 7. 提交 GitHub
+## 10. 首次提交 GitHub
 
 当前目录若尚未初始化 Git：
 
@@ -141,21 +175,21 @@ git remote add origin <你的 GitHub 仓库地址>
 git push -u origin main
 ```
 
-仓库中的 CI 会在 push 和 pull request 时执行类型检查、测试和 Worker dry-run 构建。当前未配置 GitHub 自动部署，以免在 Cloudflare/Neon 项目尚未建立时要求生产密钥。
+仓库中的 CI 会在 push 和 pull request 时执行类型检查、测试和 Worker dry-run 构建。push 到 `main` 时，检查通过后会自动部署。
 
-## 8. 暂不处理的内容
+## 11. 暂不处理的内容
 
 - 不创建 Vercel 项目；
 - 不创建前端页面；
-- 不在 GitHub Actions 中保存 Neon 连接串；
 - 不启用 Browser Run；
-- 不配置自动生产部署。
+- 不创建预览环境。
 
 等前端需求明确后，再基于 Neon 数据表设计查询 API 和页面即可。
 
-## 9. 官方资料
+## 12. 官方资料
 
 - [Cloudflare Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
 - [Cloudflare Workers 限制](https://developers.cloudflare.com/workers/platform/limits/)
 - [Cloudflare Secrets](https://developers.cloudflare.com/workers/configuration/secrets/)
+- [Cloudflare GitHub Actions 部署](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)
 - [Neon：在 Cloudflare Workers 中使用 serverless driver](https://neon.com/blog/api-cf-drizzle-neon)

@@ -174,9 +174,9 @@ npm run worker:build
 | `src/worker.ts` | 定时采集与 Neon 写入入口 |
 | `db/schema.sql` | Neon 数据库初始化结构 |
 | `.dev.vars.example` | 本地数据库连接串示例，不包含真实密码 |
-| `.github/workflows/ci.yml` | GitHub 自动测试和构建检查 |
+| `.github/workflows/ci.yml` | GitHub 自动测试、构建和 `main` 分支部署 |
 
-创建 Neon 和 Cloudflare 项目后的完整上线步骤见 [Cloudflare + Neon 部署指南](docs/Cloudflare-Neon部署指南.md)。数据库连接串必须通过 Cloudflare secret 保存，不能写进仓库。
+创建 Neon 和 Cloudflare 项目后的完整上线步骤见 [Cloudflare + Neon 部署指南](docs/Cloudflare-Neon部署指南.md)。向 GitHub 配置三个加密 Secrets 后，每次 push 到 `main` 都会在检查通过后自动部署。数据库连接串不能写进仓库。
 
 如果受限执行环境不允许 `tsx` 创建 IPC 管道，可以使用等价命令：
 
