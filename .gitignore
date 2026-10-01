@@ -3,6 +3,7 @@ dist/
 dist-worker/
 .wrangler/
 .dev.vars
+.worker-secrets.json
 .env
 .env.*
 !.env.example

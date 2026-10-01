@@ -64,7 +64,9 @@ ORDER BY table_name;
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Account ID |
 | `DATABASE_URL` | Neon 提供的完整 PostgreSQL 连接串，包含 `sslmode=require` |
 
-GitHub Actions 会把 `DATABASE_URL` 写成 Cloudflare Worker secret，不会把值写进代码或 `wrangler.jsonc`。后续每次部署会更新或保留该 secret。
+GitHub Actions 会在 runner 中生成一个临时 secret 文件，并通过 `wrangler deploy --secrets-file` 将代码和 `DATABASE_URL` 原子部署。临时文件会在成功或失败后清理，不会进入 Git。这样首次部署时不需要预先创建 Worker。
+
+Secret 名称区分大小写，必须准确写成 `DATABASE_URL`，不能写成 `NEON_DATABASE_URL`、`database_url` 或 GitHub Variable。三项都应建立在 **Repository secrets** 中。
 
 ## 6. 首次部署与以后自动部署
 
