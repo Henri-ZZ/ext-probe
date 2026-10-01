@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS collection_batches (
   completed_at timestamptz,
   status text NOT NULL CHECK (status IN ('running', 'success', 'failed')),
   source text NOT NULL,
+  shard_index integer NOT NULL DEFAULT 0 CHECK (shard_index >= 0),
+  shard_count integer NOT NULL DEFAULT 1 CHECK (shard_count > 0),
   succeeded_count integer NOT NULL DEFAULT 0,
   failed_count integer NOT NULL DEFAULT 0,
   error_message text

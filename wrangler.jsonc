@@ -4,7 +4,7 @@
   "main": "src/worker.ts",
   "compatibility_date": "2026-10-01",
   "triggers": {
-    "crons": ["0 2 * * *"]
+    "crons": ["0 2 * * *", "20 2 * * *", "40 2 * * *"]
   },
   "vars": {
     "TOP_N": "50",

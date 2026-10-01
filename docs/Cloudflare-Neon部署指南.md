@@ -59,14 +59,14 @@ npm run worker:deploy
 ```json
 {
   "triggers": {
-    "crons": ["0 2 * * *"]
+    "crons": ["0 2 * * *", "20 2 * * *", "40 2 * * *"]
   }
 }
 ```
 
-Cloudflare Cron 使用 UTC。该表达式表示每天 `02:00 UTC`，即北京时间每天 `10:00`。修改后重新部署，配置最多可能需要约 15 分钟传播。
+Cloudflare Cron 使用 UTC。三个表达式分别在北京时间每天 `10:00`、`10:20`、`10:40` 运行。每个分片固定处理 6 组任务，三次合计覆盖 9 个关键词 × 2 个语言，每组每天只采集一次。修改后重新部署，配置最多可能需要约 15 分钟传播。
 
-当前完整矩阵约有 111 个外部子请求，超过 Workers Free 每次调用的 50 个限制，因此需要 Workers Paid。若暂时只用 Free，不应直接上线完整矩阵，应先把任务拆分。
+每个分片最多约 38 个外部子请求，低于 Workers Free 单次 50 个的限制。三个分片每天合计约 111 个请求，但 Cloudflare 的该项限制按单次 Worker 调用计算，不是按全天累计。
 
 ## 5. 本地模拟 Cron
 
@@ -79,7 +79,7 @@ npm run worker:dev
 另开终端触发一次本地 scheduled handler：
 
 ```bash
-curl "http://localhost:8787/cdn-cgi/local/scheduled?format=json"
+curl "http://localhost:8787/cdn-cgi/local/scheduled?cron=0+2+*+*+*&format=json"
 ```
 
 这会真实请求 Chrome 应用商店并写入所配置的 Neon 数据库。不要用生产数据库反复测试。
@@ -95,7 +95,8 @@ curl "http://localhost:8787/health"
 在 Neon SQL Editor 中运行：
 
 ```sql
-SELECT scheduled_at, status, succeeded_count, failed_count
+SELECT scheduled_at, shard_index, shard_count,
+       status, succeeded_count, failed_count
 FROM collection_batches
 ORDER BY scheduled_at DESC
 LIMIT 10;

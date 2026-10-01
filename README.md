@@ -4,7 +4,7 @@
 
 当前默认 Top 50 使用纯 HTTP：首次普通 GET 获取前 10 条和 continuation token，随后进行 4 次匿名分页 POST。它不需要浏览器、Cookie、Google 登录或代理。Browser adapter 仍保留用于 ground truth 和回退验证。
 
-项目现已包含 Cloudflare Worker 定时入口和 Neon PostgreSQL 存储，可每天自动采集 9 个关键词 × 2 个语言地区。Vercel 和前端暂未接入。详见 [Cloudflare + Neon 部署指南](docs/Cloudflare-Neon部署指南.md)、[纯 HTTP Top 50 研究报告](docs/纯HTTP-Top50研究报告.md) 和 [Cloudflare 部署架构](docs/Cloudflare部署架构.md)。
+项目现已包含 Cloudflare Worker 定时入口和 Neon PostgreSQL 存储，可每天自动采集 9 个关键词 × 2 个语言地区。为遵守 Workers Free 单次 50 个子请求限制，每天的 18 组任务固定拆成 3 个 Cron 分片，每次只跑 6 组。Vercel 和前端暂未接入。详见 [Cloudflare + Neon 部署指南](docs/Cloudflare-Neon部署指南.md)、[纯 HTTP Top 50 研究报告](docs/纯HTTP-Top50研究报告.md) 和 [Cloudflare 部署架构](docs/Cloudflare部署架构.md)。
 
 ## 当前能做什么
 
@@ -164,7 +164,7 @@ npm run worker:build
 
 ## 云端定时采集
 
-生产入口位于 `src/worker.ts`。默认 Cron 为每天 `02:00 UTC`，即北京时间每天 `10:00`，每轮采集前 50 名并写入 Neon。
+生产入口位于 `src/worker.ts`。默认在每天 `02:00`、`02:20`、`02:40 UTC`（北京时间 `10:00`、`10:20`、`10:40`）分别执行一个分片。每组关键词和语言每天只采集一次 Top 50，并写入 Neon。
 
 主要文件：
 

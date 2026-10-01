@@ -1,6 +1,6 @@
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 import { collectHttpRanking } from "./adapters/http.js";
-import { DEFAULT_KEYWORDS, DEFAULT_LOCALES, DEFAULT_TOP_N, TARGET_EXTENSION_ID } from "./config.js";
+import { DAILY_CRON_SHARDS, DEFAULT_TOP_N, getShardJobs, TARGET_EXTENSION_ID } from "./config.js";
 
 interface Env {
   DATABASE_URL: string;
@@ -10,6 +10,7 @@ interface Env {
 
 interface CronController {
   scheduledTime: number;
+  cron: string;
 }
 
 interface WorkerExecutionContext {
@@ -98,27 +99,32 @@ async function saveFailedRun(
   `;
 }
 
-export async function runCollection(env: Env, scheduledAt = new Date()): Promise<{ batchId: string; succeeded: number; failed: number }> {
+export async function runCollection(
+  env: Env,
+  scheduledAt = new Date(),
+  shardIndex = 0,
+): Promise<{ batchId: string; shardIndex: number; succeeded: number; failed: number }> {
   if (!env.DATABASE_URL) throw new Error("缺少 DATABASE_URL secret。");
 
   const sql = neon(env.DATABASE_URL);
   const batchId = crypto.randomUUID();
   const topN = positiveInteger(env.TOP_N, DEFAULT_TOP_N);
   const delayMs = positiveInteger(env.COLLECTION_DELAY_MS, 1000);
+  const jobs = getShardJobs(shardIndex);
   let succeeded = 0;
   let failed = 0;
 
   await sql`
-    INSERT INTO collection_batches (id, scheduled_at, started_at, status, source)
-    VALUES (${batchId}::uuid, ${scheduledAt.toISOString()}::timestamptz, now(), 'running', 'cloudflare-cron')
+    INSERT INTO collection_batches (id, scheduled_at, started_at, status, source, shard_index, shard_count)
+    VALUES (
+      ${batchId}::uuid, ${scheduledAt.toISOString()}::timestamptz, now(), 'running',
+      'cloudflare-cron', ${shardIndex}, ${DAILY_CRON_SHARDS.length}
+    )
   `;
 
   try {
-    let index = 0;
-    for (const locale of DEFAULT_LOCALES) {
-      for (const keyword of DEFAULT_KEYWORDS) {
+    for (const [index, { keyword, locale }] of jobs.entries()) {
         if (index > 0) await pause(delayMs);
-        index += 1;
         const runId = crypto.randomUUID();
         const collectedAt = new Date();
         const started = performance.now();
@@ -154,7 +160,6 @@ export async function runCollection(env: Env, scheduledAt = new Date()): Promise
             error,
           });
         }
-      }
     }
 
     const status: RunStatus = failed === 0 ? "success" : "failed";
@@ -163,7 +168,7 @@ export async function runCollection(env: Env, scheduledAt = new Date()): Promise
       SET completed_at = now(), status = ${status}, succeeded_count = ${succeeded}, failed_count = ${failed}
       WHERE id = ${batchId}::uuid
     `;
-    return { batchId, succeeded, failed };
+    return { batchId, shardIndex, succeeded, failed };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await sql`
@@ -178,7 +183,9 @@ export async function runCollection(env: Env, scheduledAt = new Date()): Promise
 
 export default {
   async scheduled(controller: CronController, env: Env, ctx: WorkerExecutionContext): Promise<void> {
-    ctx.waitUntil(runCollection(env, new Date(controller.scheduledTime)).then((summary) => {
+    const shardIndex = DAILY_CRON_SHARDS.indexOf(controller.cron as typeof DAILY_CRON_SHARDS[number]);
+    if (shardIndex < 0) throw new Error(`未识别的 Cron 表达式：${controller.cron}`);
+    ctx.waitUntil(runCollection(env, new Date(controller.scheduledTime), shardIndex).then((summary) => {
       console.log("定时采集完成", summary);
     }));
   },
