@@ -5,8 +5,11 @@ import {
   DEFAULT_BATCH_SIZE,
   DEFAULT_REFRESH_HOURS,
   DEFAULT_TOP_N,
+  FAILURE_BACKOFF_MINUTES,
+  nextAttemptMinutes,
   positiveInt,
   resolveTargetRanks,
+  type ProbeJob,
 } from "./config.js";
 import {
   extractSerpProfiles,
@@ -46,6 +49,7 @@ type DueJob = {
   keyword: string;
   locale: string;
   last_collected_at: unknown;
+  consecutive_failures: unknown;
 };
 
 type CollectedItem = {
@@ -55,6 +59,8 @@ type CollectedItem = {
 
 export type CollectionSummary = {
   batchId: string | null;
+  /** 本轮开始时回收的被中断批次数量。 */
+  recovered: number;
   jobs: number;
   collected: number;
   failed: number;
@@ -144,7 +150,10 @@ async function getUnprofiledTargets(sql: Sql, limit: number): Promise<string[]> 
 
 /**
  * 需要采集的 (keyword, locale) 组：从未成功采集过，或距上次成功采集已超过
- * refreshHours。按最久未采集优先排序，因此多次调用会自然轮转覆盖所有目标。
+ * refreshHours，并且不在失败退避期内。
+ *
+ * 排序仍然是「最久未采集优先」，但退避中的组合会被 WHERE 直接排除而不是靠排序让位——
+ * 否则那些永远拿不到成功记录的组会一直霸占批次头部，把正常目标挤到永远排不上队。
  */
 async function getDueJobs(
   sql: Sql,
@@ -155,7 +164,8 @@ async function getDueJobs(
     SELECT
       t.keyword,
       t.locale,
-      ok.collected_at AS last_collected_at
+      ok.collected_at AS last_collected_at,
+      COALESCE(cs.consecutive_failures, 0)::int AS consecutive_failures
     FROM (
       SELECT DISTINCT keyword, locale
       FROM tracking_targets
@@ -170,11 +180,88 @@ async function getDueJobs(
       ORDER BY rr.collected_at DESC
       LIMIT 1
     ) ok ON true
-    WHERE ok.collected_at IS NULL
-       OR ok.collected_at < now() - (${refreshHours}::int * interval '1 hour')
+    LEFT JOIN collection_state cs
+      ON cs.keyword = t.keyword AND cs.locale = t.locale
+    WHERE (
+        ok.collected_at IS NULL
+        OR ok.collected_at < now() - (${refreshHours}::int * interval '1 hour')
+      )
+      AND (cs.next_attempt_at IS NULL OR cs.next_attempt_at <= now())
     ORDER BY ok.collected_at ASC NULLS FIRST, t.keyword, t.locale
     LIMIT ${limit}
   `) as DueJob[];
+}
+
+/**
+ * 把 config 里的退避表编译成 SQL CASE。
+ * 每档都用 `collection_state.consecutive_failures + 1`（本次失败后的次数）判断，
+ * 第一个命中的分支生效，因此与 nextAttemptMinutes 一一对应，不会各自漂移。
+ */
+function backoffSql(): string {
+  const branches = FAILURE_BACKOFF_MINUTES.slice(0, -1).map(
+    (minutes, index) =>
+      `WHEN collection_state.consecutive_failures + 1 <= ${index + 1} THEN interval '${minutes} minutes'`,
+  );
+  const cap = FAILURE_BACKOFF_MINUTES[FAILURE_BACKOFF_MINUTES.length - 1];
+
+  return `CASE ${branches.join(" ")} ELSE interval '${cap} minutes' END`;
+}
+
+/** 记录一次失败：累加连续失败次数，并把下一次尝试推到退避之后。 */
+async function recordCollectionFailure(
+  sql: Sql,
+  job: ProbeJob,
+  message: string,
+): Promise<void> {
+  const firstDelay = nextAttemptMinutes(1);
+
+  await sql`
+    INSERT INTO collection_state (
+      keyword, locale, consecutive_failures, next_attempt_at, last_error, last_failed_at
+    ) VALUES (
+      ${job.keyword}, ${job.locale}, 1,
+      now() + ${sql.unsafe(`interval '${firstDelay} minutes'`)},
+      ${message.slice(0, 2000)}, now()
+    )
+    ON CONFLICT (keyword, locale) DO UPDATE SET
+      consecutive_failures = collection_state.consecutive_failures + 1,
+      next_attempt_at = now() + ${sql.unsafe(backoffSql())},
+      last_error = EXCLUDED.last_error,
+      last_failed_at = now(),
+      updated_at = now()
+  `;
+}
+
+/** 采集成功后立刻解除退避，让这一组回到正常节奏。 */
+async function clearCollectionFailure(sql: Sql, job: ProbeJob): Promise<void> {
+  await sql`
+    INSERT INTO collection_state (
+      keyword, locale, consecutive_failures, next_attempt_at, last_error, last_failed_at
+    ) VALUES (${job.keyword}, ${job.locale}, 0, NULL, NULL, NULL)
+    ON CONFLICT (keyword, locale) DO UPDATE SET
+      consecutive_failures = 0,
+      next_attempt_at = NULL,
+      last_error = NULL,
+      updated_at = now()
+  `;
+}
+
+/**
+ * 回收被中断的批次。Worker 在执行中被杀（超时、部署、请求方断开）时，
+ * 批次会永远停在 running，这里在每轮开始时把它们标记为失败。
+ */
+async function recoverStaleBatches(sql: Sql): Promise<number> {
+  const rows = (await sql`
+    UPDATE collection_batches
+    SET completed_at = now(),
+        status = 'failed',
+        error_message = '执行被中断：批次超过 30 分钟仍未完成，已自动回收。'
+    WHERE status = 'running'
+      AND started_at < now() - interval '30 minutes'
+    RETURNING id
+  `) as { id: string }[];
+
+  return rows.length;
 }
 
 /** 同一个 (keyword, locale) 组可能被多个用户 / 多个扩展跟踪。 */
@@ -297,10 +384,14 @@ export async function runCollection(
   const delayMs = positiveInt(env.COLLECTION_DELAY_MS, 1000);
   const source = options.source ?? "cloudflare-cron";
 
+  // 先回收上一轮被中断的批次，即使本轮没有到期任务也要做。
+  const recovered = await recoverStaleBatches(sql);
+
   const jobs = await getDueJobs(sql, batchSize, refreshHours);
   if (jobs.length === 0) {
     return {
       batchId: null,
+      recovered,
       jobs: 0,
       collected: 0,
       failed: 0,
@@ -369,6 +460,13 @@ export async function runCollection(
           console.error("写入搜索结果元数据失败", error);
         }
 
+        // 成功即解除退避。失败本身不能让采集结果作废，因此单独兜住异常。
+        try {
+          await clearCollectionFailure(sql, job);
+        } catch (stateError) {
+          console.error("清除采集失败状态失败", stateError);
+        }
+
         collected += 1;
       } catch (error) {
         const durationMs = Math.round(performance.now() - started);
@@ -385,6 +483,16 @@ export async function runCollection(
             error,
           });
           targets += 1;
+        }
+
+        try {
+          await recordCollectionFailure(
+            sql,
+            job,
+            error instanceof Error ? error.message : String(error),
+          );
+        } catch (stateError) {
+          console.error("记录采集失败状态失败", stateError);
         }
 
         failed += 1;
@@ -417,7 +525,15 @@ export async function runCollection(
       WHERE id = ${batchId}::uuid
     `;
 
-    return { batchId, jobs: jobs.length, collected, failed, targets, profiles };
+    return {
+      batchId,
+      recovered,
+      jobs: jobs.length,
+      collected,
+      failed,
+      targets,
+      profiles,
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await sql`

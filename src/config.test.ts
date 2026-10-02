@@ -1,6 +1,37 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { positiveInt, resolveTargetRanks } from "./config.js";
+import {
+  FAILURE_BACKOFF_CAP_MINUTES,
+  FAILURE_BACKOFF_MINUTES,
+  nextAttemptMinutes,
+  positiveInt,
+  resolveTargetRanks,
+} from "./config.js";
+
+test("失败退避按连续次数逐级拉长，并在最后一档封顶", () => {
+  assert.deepEqual(
+    Array.from({ length: FAILURE_BACKOFF_MINUTES.length }, (_, i) =>
+      nextAttemptMinutes(i + 1),
+    ),
+    FAILURE_BACKOFF_MINUTES,
+  );
+
+  // 超过表长之后一直停在最后一档，不会无限增长。
+  assert.equal(
+    nextAttemptMinutes(FAILURE_BACKOFF_MINUTES.length + 1),
+    FAILURE_BACKOFF_CAP_MINUTES,
+  );
+  assert.equal(nextAttemptMinutes(50), FAILURE_BACKOFF_CAP_MINUTES);
+  assert.equal(nextAttemptMinutes(0), FAILURE_BACKOFF_MINUTES[0]);
+  assert.equal(nextAttemptMinutes(-3), FAILURE_BACKOFF_MINUTES[0]);
+
+  // 退避必须严格递增，否则「让位给正常目标」的前提不成立。
+  for (let i = 1; i < FAILURE_BACKOFF_MINUTES.length; i += 1) {
+    const current = FAILURE_BACKOFF_MINUTES[i] ?? 0;
+    const previous = FAILURE_BACKOFF_MINUTES[i - 1] ?? 0;
+    assert.ok(current > previous, `第 ${i + 1} 档必须大于第 ${i} 档`);
+  }
+});
 
 test("resolveTargetRanks 为每个目标扩展返回名次，未出现则为 null", () => {
   const items = [

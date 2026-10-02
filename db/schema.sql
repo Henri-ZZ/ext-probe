@@ -60,6 +60,26 @@ CREATE INDEX IF NOT EXISTS ranking_results_extension_idx
 CREATE INDEX IF NOT EXISTS collection_batches_scheduled_at_idx
   ON collection_batches (scheduled_at DESC);
 
+-- 每个 (keyword, locale) 组的采集健康状态，由本仓库独占写入。
+--
+-- 存在的理由：失败的任务没有成功的 ranking_runs 记录，因此在「最久未采集优先」的
+-- 调度里会永远排在最前面。没有这张表时，若干个持续失败的组合就能把每一批名额占满，
+-- 导致其他正常目标永远排不上队（静默停更）。
+CREATE TABLE IF NOT EXISTS collection_state (
+  keyword text NOT NULL,
+  locale text NOT NULL,
+  consecutive_failures integer NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+  -- 退避到期时间。到期前该组不再参与调度。
+  next_attempt_at timestamptz,
+  last_error text,
+  last_failed_at timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (keyword, locale)
+);
+
+CREATE INDEX IF NOT EXISTS collection_state_retry_idx
+  ON collection_state (next_attempt_at);
+
 -- 扩展的商店元数据（标题、图标等）。
 --
 -- 由 ext-probe 独占写入：所有 Chrome Web Store 出网请求都留在本仓库。

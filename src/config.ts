@@ -43,6 +43,33 @@ export const DEFAULT_BATCH_SIZE = 6;
 /** 一个组距上次成功采集超过多少小时算「过期」。 */
 export const DEFAULT_REFRESH_HOURS = 20;
 
+/** 退避上限：连续多次失败后固定停在这一档。 */
+export const FAILURE_BACKOFF_CAP_MINUTES = 12 * 60;
+
+/**
+ * 采集失败后的退避时间表，单位分钟。下标对应「连续第 N 次失败」（N = index + 1）。
+ *
+ * 最后一档是长期冷却而不是永久暂停：既不会因为一个坏组合反复重试而挤掉正常目标，
+ * 又能在 Chrome 应用商店恢复后自动重新采上，不需要人工介入。
+ */
+export const FAILURE_BACKOFF_MINUTES: number[] = [
+  15,
+  30,
+  60,
+  4 * 60,
+  FAILURE_BACKOFF_CAP_MINUTES,
+];
+
+/** 第 N 次连续失败后应该等多少分钟再试。N < 1 时按第一次算。 */
+export function nextAttemptMinutes(consecutiveFailures: number): number {
+  const attempt = Math.min(
+    Math.max(Math.trunc(consecutiveFailures), 1),
+    FAILURE_BACKOFF_MINUTES.length,
+  );
+
+  return FAILURE_BACKOFF_MINUTES[attempt - 1] ?? FAILURE_BACKOFF_CAP_MINUTES;
+}
+
 export type ProbeJob = {
   keyword: string;
   locale: string;
