@@ -49,25 +49,62 @@ function rpcBody(keyword: string, token: string): string {
   return `${new URLSearchParams({ "f.req": JSON.stringify(request) })}&`;
 }
 
+/**
+ * 初始 HTML 里的续传 token 时有时无：同一个 URL 连续请求，实测约一半概率缺失
+ * （HTML 长度几乎一样，不是页面变体）。没有它就无法翻页，所以这里重试把它拿稳，
+ * 而不是把「拿不到 token」当成「结果集到头」。
+ */
+const INITIAL_ATTEMPTS = 5;
+
 export async function collectHttpRanking(keyword: string, locale: string, topN: number): Promise<CollectionResult> {
   const searchUrl = `https://chromewebstore.google.com/search/${encodeURIComponent(keyword)}?hl=${encodeURIComponent(locale)}`;
-  const initialResponse = await fetch(searchUrl, { redirect: "follow" });
-  const html = await initialResponse.text();
-  const initial = parseOrderedSerp(html);
-  if (!initial.reliable || !initial.items) {
-    return { status: initialResponse.status, html, ...initial, loadedBatches: 0, endOfResults: false, paginationResponses: [] };
+
+  let response: Response | undefined;
+  let html = "";
+  let initial: ReturnType<typeof parseOrderedSerp> | undefined;
+  let token: string | null = null;
+
+  for (let attempt = 1; attempt <= INITIAL_ATTEMPTS; attempt += 1) {
+    response = await fetch(searchUrl, { redirect: "follow" });
+    html = await response.text();
+    initial = parseOrderedSerp(html);
+    if (!initial.reliable || !initial.items) break;
+    token = extractInitialToken(html);
+    // 首页自身就够长，或拿到了能继续翻页的 token，都不需要再抓。
+    if (initial.items.length >= topN || token) break;
+  }
+
+  if (!initial || !initial.reliable || !initial.items) {
+    return {
+      status: response?.status ?? 0,
+      html,
+      items: null,
+      reliable: false,
+      strategy: null,
+      diagnostics: [
+        ...(initial?.diagnostics ?? []),
+        `No usable search page after ${INITIAL_ATTEMPTS} attempts.`,
+      ],
+      loadedBatches: 0,
+      endOfResults: false,
+      paginationResponses: [],
+    };
   }
 
   const ids = initial.items.map((item) => item.extensionId);
   const paginationResponses: string[] = [];
   const diagnostics = [...initial.diagnostics];
-  let token = extractInitialToken(html);
   let loadedBatches = 0;
   let endOfResults = false;
+  // 首页只有 10 条而 topN 更大时，没有 token 就意味着翻不了页。这和「结果集到头」
+  // 是两回事——绝不能据此断定目标不在前面。这里保持 endOfResults 为 false，让
+  // complete 为假、整次采集被判为不可靠，由 worker 记成失败并走退避重试：
+  // 报一个假的「未进前 N」比报失败糟得多，前者会静默污染排名历史。
+  let paginationUnavailable = false;
 
   while (ids.length < topN) {
     if (!token) {
-      endOfResults = true;
+      paginationUnavailable = true;
       break;
     }
     const params = new URLSearchParams({
@@ -86,6 +123,7 @@ export async function collectHttpRanking(keyword: string, locale: string, topN: 
     if (!response.ok) throw new Error(`Pagination RPC returned HTTP ${response.status}.`);
     const page = parseRpcResponse(text);
     if (page.ids.length === 0) {
+      // 这才是真正的「结果集到头」：RPC 明确返回了零条。
       endOfResults = true;
       break;
     }
@@ -101,10 +139,15 @@ export async function collectHttpRanking(keyword: string, locale: string, topN: 
   const selected = ids.slice(0, topN);
   const items: SerpItem[] = selected.map((extensionId, index) => ({ extensionId, position: index + 1 }));
   const complete = items.length >= topN || endOfResults;
+  if (paginationUnavailable) {
+    diagnostics.push(
+      `No continuation token after ${INITIAL_ATTEMPTS} attempts, so only the first ${ids.length} results were verified. Incomplete on purpose: a rank below ${ids.length} cannot be ruled out.`,
+    );
+  }
   diagnostics.push(`Loaded ${loadedBatches} anonymous HTTP pagination batches with page size ${PAGE_SIZE}; no Cookie header was sent.`);
   diagnostics.push(`Validated ${items.length} unique ordered extension IDs across the initial HTML and pagination RPC responses.`);
   return {
-    status: initialResponse.status,
+    status: response?.status ?? 0,
     html,
     items: complete ? items : null,
     reliable: complete,
