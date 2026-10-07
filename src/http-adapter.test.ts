@@ -24,15 +24,14 @@ test("parses IDs and next token from a framed zTyKYc response", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 初始 HTML 的续传 token 时有时无，这一组测试锁住由此而来的两个行为。
+// 商店的两种间歇性行为，以及由此而来的「必须报不可靠、不能报未找到」。
 // ---------------------------------------------------------------------------
 
 const INITIAL_ATTEMPTS = 5;
 const CORPUS = "QVl4VEdCQWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=";
 
 /** 第 i 个扩展 id：32 位且只含 a–p。 */
-const idAt = (index: number): string =>
-  String.fromCharCode(97 + index).repeat(32);
+const idAt = (index: number): string => String.fromCharCode(97 + index).repeat(32);
 
 /** 一张能被 parseOrderedSerp 认作有序 SERP 的搜索页。 */
 function serpHtml(count: number, token: string | null): string {
@@ -55,14 +54,15 @@ function rpcResponse(ids: string[], token: string | null): string {
   return `)]}'\n\n${JSON.stringify(frame).length}\n${JSON.stringify(frame)}\n`;
 }
 
-/** 记录调用次数、可自定义每个响应。 */
-function stubFetch(handler: (url: string, searchCalls: number) => Response) {
+/** 记录搜索页调用次数；handler 可据 url / 次数 / 请求体决定返回什么。 */
+function stubFetch(handler: (url: string, searchCalls: number, body: string) => Response) {
   const real = globalThis.fetch;
   let searchCalls = 0;
-  globalThis.fetch = (async (input: unknown) => {
+  globalThis.fetch = (async (input: unknown, init?: { body?: unknown }) => {
     const url = String(input);
     if (url.includes("/search/")) searchCalls += 1;
-    return handler(url, searchCalls);
+    const body = typeof init?.body === "string" ? init.body : "";
+    return handler(url, searchCalls, body);
   }) as unknown as typeof fetch;
   return {
     get searchCalls() {
@@ -74,28 +74,50 @@ function stubFetch(handler: (url: string, searchCalls: number) => Response) {
   };
 }
 
-test("a search page without a continuation token is retried, not treated as the end", async () => {
-  // 第一次不给 token，第二次给——真实商店就是这个行为。
+const FIRST_PAGE = Array.from({ length: 10 }, (_, index) => idAt(index));
+
+test("a search page that carries no result list is retried", async () => {
+  // 商店有时返回分类正常、却一个扩展 ID 都没有的 HTML。
   const stub = stubFetch((url, searchCalls) =>
     url.includes("/search/")
-      ? new Response(serpHtml(10, searchCalls === 1 ? null : CORPUS), { status: 200 })
+      ? new Response(searchCalls === 1 ? "<html><body>no serp here</body></html>" : serpHtml(12, null), { status: 200 })
       : new Response(rpcResponse([], null), { status: 200 }),
   );
 
   try {
-    const result = await collectHttpRanking("edit page", "ja", 50);
-    assert.equal(stub.searchCalls, 2, "第一次没有 token 时应当重试搜索页");
+    const result = await collectHttpRanking("edit page", "ja", 10);
+    assert.equal(stub.searchCalls, 2, "解析不出结果页时应当重试");
     assert.equal(result.reliable, true);
     assert.equal(result.items?.length, 10);
-    // RPC 明确返回零条，这才是真正的「结果集到头」。
-    assert.equal(result.endOfResults, true);
   } finally {
     stub.restore();
   }
 });
 
-test("giving up on the token reports an incomplete collection instead of 'not found'", async () => {
-  // 始终拿不到 token：绝不能据此断定目标不在前面。
+test("a missing HTML token is recovered by bootstrapping the RPC", async () => {
+  // 初始 HTML 常常不带续传 token；用空 token 调 RPC 可以换到它，分页因此自举。
+  let rpcCalls = 0;
+  const stub = stubFetch((url) => {
+    if (url.includes("/search/")) return new Response(serpHtml(10, null), { status: 200 });
+    rpcCalls += 1;
+    // 第 1 次（自举）给第 1 页 + 续传 token；第 2 次给零条，即结果集到头。
+    return new Response(rpcCalls === 1 ? rpcResponse(FIRST_PAGE, CORPUS) : rpcResponse([], null), { status: 200 });
+  });
+
+  try {
+    const result = await collectHttpRanking("edit page", "ja", 50);
+    assert.equal(stub.searchCalls, 1, "页面可用时不该为 token 反复重抓");
+    assert.equal(result.reliable, true);
+    assert.equal(result.items?.length, 10);
+    assert.equal(result.endOfResults, true);
+    assert.match(result.diagnostics.join(" "), /bootstrapped/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("an unusable bootstrap reports an incomplete collection instead of 'not found'", async () => {
+  // 页面没有 token、自举也拿不到：绝不能据此断定目标不在前面。
   const stub = stubFetch((url) =>
     url.includes("/search/")
       ? new Response(serpHtml(10, null), { status: 200 })
@@ -104,11 +126,27 @@ test("giving up on the token reports an incomplete collection instead of 'not fo
 
   try {
     const result = await collectHttpRanking("edit page", "ja", 50);
-    assert.equal(stub.searchCalls, INITIAL_ATTEMPTS, "应当重试到上限");
+    assert.equal(stub.searchCalls, 1);
     assert.equal(result.reliable, false, "只验证了 10 条就不能声称可靠");
     assert.equal(result.items, null, "不能返回一个会被当成完整结果集的数组");
-    assert.equal(result.endOfResults, false, "没有 token 不等于结果集到头");
+    assert.equal(result.endOfResults, false, "拿不到 token 不等于结果集到头");
     assert.match(result.diagnostics.join(" "), /No continuation token/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("no usable search page at all is reported as such", async () => {
+  const stub = stubFetch((url) =>
+    url.includes("/search/") ? new Response("<html>nope</html>", { status: 200 }) : new Response(rpcResponse([], null), { status: 200 }),
+  );
+
+  try {
+    const result = await collectHttpRanking("edit page", "ja", 50);
+    assert.equal(stub.searchCalls, INITIAL_ATTEMPTS, "应当重试到上限");
+    assert.equal(result.reliable, false);
+    assert.equal(result.items, null);
+    assert.match(result.diagnostics.join(" "), /No search page with an ordered result list/);
   } finally {
     stub.restore();
   }
